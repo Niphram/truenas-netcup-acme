@@ -16,12 +16,14 @@ Set and delete the TXT DNS-Record so the certificate authority can verify owners
 
 Place binary in a convenient location.
 
-Create a `config.toml` next to it with the following content:
+Create a `config.json` next to it with the following content:
 
-```toml
-CID = "Your Customer ID"
-API_PW = "Your API Password"
-API_KEY = "Your API Key"
+```json
+{
+  "CID": "Customer ID",
+  "API_PW": "API Password",
+  "API_KEY": "Api Key"
+}
 ```
 
 Create a new ACME DNS-Authenticator in TrueNAS, set it's type to `shell`, point it to the executable. Set other options as necessary.
