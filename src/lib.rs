@@ -1,19 +1,14 @@
 use anyhow::{anyhow, Context, Ok};
-use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 enum ResponseStatus {
-    #[serde(rename = "error")]
     Error,
-    #[serde(rename = "started")]
     Started,
-    #[serde(rename = "pending")]
     Pending,
-    #[serde(rename = "warning")]
     Warning,
-    #[serde(rename = "success")]
     Success,
 }
 
@@ -36,11 +31,12 @@ struct ResponseMessage {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 enum ResponseData {
-    #[serde(rename = "dnsrecords")]
     DNSRecords(Vec<DNSRecord>),
-    #[serde(rename = "apisessionid")]
     APISessionId(String),
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -59,18 +55,18 @@ pub struct NetcupAPIClient {
     session: String,
     customer_number: String,
     api_key: String,
-    client: Client,
+    client: surf::Client,
 }
 
 const ENDPOINT: &str = "https://ccp.netcup.net/run/webservice/servers/endpoint.php?JSON";
 
 impl NetcupAPIClient {
-    pub fn login(
+    pub async fn login(
         customer_number: String,
         api_password: String,
         api_key: String,
     ) -> anyhow::Result<Self> {
-        let client = reqwest::blocking::Client::new();
+        let client = surf::Client::new();
 
         let payload = json!({
             "action": "login",
@@ -81,10 +77,16 @@ impl NetcupAPIClient {
             }
         });
 
-        let response = client.post(ENDPOINT).body(payload.to_string()).send()?;
-        let response: ResponseMessage = serde_json::from_str(&response.text()?)?;
+        let mut response = client
+            .post(ENDPOINT)
+            .body_json(&payload)
+            .map_err(|err| anyhow!(err))?
+            .await
+            .map_err(|err| anyhow!(err))?;
 
-        if let Some(ResponseData::APISessionId(session_id)) = response.response_data {
+        let message: ResponseMessage = response.body_json().await.map_err(|err| anyhow!(err))?;
+
+        if let Some(ResponseData::APISessionId(session_id)) = message.response_data {
             Ok(Self {
                 session: session_id,
                 customer_number,
@@ -96,7 +98,7 @@ impl NetcupAPIClient {
         }
     }
 
-    pub fn logout(self) -> anyhow::Result<()> {
+    pub async fn logout(self) -> anyhow::Result<()> {
         let payload = json!({
             "action": "logout",
             "param": {
@@ -106,20 +108,17 @@ impl NetcupAPIClient {
             }
         });
 
-        println!("Logout payload: {}", payload);
-
-        let body = self
-            .client
+        self.client
             .post(ENDPOINT)
-            .body(payload.to_string())
-            .send()?;
-
-        println!("{}", body.text()?);
+            .body_json(&payload)
+            .map_err(|err| anyhow!(err))?
+            .await
+            .map_err(|err| anyhow!(err))?;
 
         Ok(())
     }
 
-    pub fn list_records(&self, domain: &str) -> anyhow::Result<Vec<DNSRecord>> {
+    pub async fn list_records(&self, domain: &str) -> anyhow::Result<Vec<DNSRecord>> {
         let payload = json!({
             "action": "infoDnsRecords",
             "param": {
@@ -130,28 +129,31 @@ impl NetcupAPIClient {
             }
         });
 
-        let body = self
+        let mut response = self
             .client
             .post(ENDPOINT)
-            .body(payload.to_string())
-            .send()?;
+            .body_json(&payload)
+            .map_err(|err| anyhow!(err))?
+            .await
+            .map_err(|err| anyhow!(err))?;
 
-        let response: ResponseMessage = serde_json::from_str(&body.text()?)?;
+        let message: ResponseMessage = response.body_json().await.map_err(|err| anyhow!(err))?;
 
-        if let Some(ResponseData::DNSRecords(records)) = response.response_data {
+        if let Some(ResponseData::DNSRecords(records)) = message.response_data {
             Ok(records)
         } else {
             Err(anyhow!("No records were returned!"))
         }
     }
 
-    pub fn find_txt_record_id(
+    pub async fn find_txt_record_id(
         &self,
         domain: &str,
         hostname: &str,
         content: &str,
     ) -> anyhow::Result<String> {
-        self.list_records(domain)?
+        self.list_records(domain)
+            .await?
             .iter()
             .find_map(|r| {
                 let found =
@@ -163,7 +165,7 @@ impl NetcupAPIClient {
             .context("Record has no id!")
     }
 
-    pub fn add_txt_record(
+    pub async fn add_txt_record(
         &self,
         domain: &str,
         hostname: &str,
@@ -192,15 +194,17 @@ impl NetcupAPIClient {
             }
         });
 
-        let body = self
+        let mut response = self
             .client
             .post(ENDPOINT)
-            .body(payload.to_string())
-            .send()?;
+            .body_json(&payload)
+            .map_err(|err| anyhow!(err))?
+            .await
+            .map_err(|err| anyhow!(err))?;
 
-        let response: ResponseMessage = serde_json::from_str(&body.text()?)?;
+        let message: ResponseMessage = response.body_json().await.map_err(|err| anyhow!(err))?;
 
-        if let Some(ResponseData::DNSRecords(records)) = response.response_data {
+        if let Some(ResponseData::DNSRecords(records)) = message.response_data {
             records
                 .iter()
                 .find(|record| {
@@ -216,7 +220,7 @@ impl NetcupAPIClient {
         }
     }
 
-    pub fn delete_record(
+    pub async fn delete_record(
         &self,
         id: &str,
         domain: &str,
@@ -246,36 +250,20 @@ impl NetcupAPIClient {
             }
         });
 
-        let body = self
+        let mut response = self
             .client
             .post(ENDPOINT)
-            .body(payload.to_string())
-            .send()?;
+            .body_json(&payload)
+            .map_err(|err| anyhow!(err))?
+            .await
+            .map_err(|err| anyhow!(err))?;
 
-        let response: ResponseMessage = serde_json::from_str(&body.text()?)?;
+        let response_data: ResponseMessage =
+            response.body_json().await.map_err(|err| anyhow!(err))?;
 
-        match response.status {
+        match response_data.status {
             ResponseStatus::Success => Ok(()),
             _ => Err(anyhow!("Could not delete record!")),
         }
-    }
-}
-
-impl Drop for NetcupAPIClient {
-    fn drop(&mut self) {
-        let payload = json!({
-            "action": "logout",
-            "param": {
-                "apikey": &self.api_key,
-                "apisessionid": &self.session,
-                "customernumber": &self.customer_number
-            }
-        });
-
-        self.client
-            .post(ENDPOINT)
-            .body(payload.to_string())
-            .send()
-            .expect("Send Logout");
     }
 }
